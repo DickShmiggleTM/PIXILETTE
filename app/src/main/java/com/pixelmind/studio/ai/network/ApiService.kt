@@ -7,7 +7,7 @@ import retrofit2.http.Url
 
 /**
  * Provider-agnostic Retrofit contract. Each provider descriptor can supply base URL, headers,
- * model id, and endpoint while sharing the same internal request model.
+ * model id, and endpoint while sharing a single internal request model.
  */
 interface ApiService {
 
@@ -57,9 +57,21 @@ data class ChatMessage(
     val content: List<MessageContent>,
 )
 
-sealed interface MessageContent {
-    data class Text(val text: String) : MessageContent
-    data class ImageBase64(val mediaType: String, val base64Data: String) : MessageContent
+data class MessageContent(
+    val type: String,
+    val text: String? = null,
+    val mediaType: String? = null,
+    val base64Data: String? = null,
+) {
+    companion object {
+        fun Text(text: String) = MessageContent(type = "text", text = text)
+
+        fun ImageBase64(mediaType: String, base64Data: String) = MessageContent(
+            type = "image_base64",
+            mediaType = mediaType,
+            base64Data = base64Data,
+        )
+    }
 }
 
 data class MultiProviderChatResponse(
@@ -95,10 +107,6 @@ data class GeneratedImage(
     val height: Int,
 )
 
-/**
- * This contract allows the chat feature to pass bitmap context to vision models and parse both
- * text instructions + image outputs for sprite or sprite sheet updates.
- */
 interface AiGateway {
     suspend fun runSpriteAssistant(
         providerConfig: ProviderConfig,
