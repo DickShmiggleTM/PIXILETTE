@@ -1,159 +1,106 @@
 package com.pixelmind.studio.editor
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.unit.IntSize
-import kotlinx.coroutines.flow.StateFlow
-
-/**
- * High-level state contract for [PixelCanvas] to keep UI stateless and ViewModel-driven.
- */
-data class PixelCanvasUiState(
-    val gridWidth: Int = 32,
-    val gridHeight: Int = 32,
-    val pixelSizePx: Float = 16f,
-    val zoom: Float = 1f,
-    val pan: Offset = Offset.Zero,
-    val activeColor: Color = Color.Black,
-    val activeTool: PixelTool = PixelTool.Pencil,
-    val layers: List<PixelLayer> = emptyList(),
-    val activeLayerId: String? = null,
-    val showGrid: Boolean = true,
-)
-
-enum class PixelTool {
-    Pencil,
-    Eraser,
-    Bucket,
-    Eyedropper,
-}
-
-data class PixelLayer(
-    val id: String,
-    val name: String,
-    val isVisible: Boolean = true,
-    val pixels: Map<PixelPoint, Color> = emptyMap(),
-)
-
-data class PixelPoint(val x: Int, val y: Int)
-
-/**
- * Intents emitted by the canvas to mutate editor state from a ViewModel/reducer.
- */
-sealed interface CanvasAction {
-    data class SetPixel(val point: PixelPoint, val color: Color) : CanvasAction
-    data class ErasePixel(val point: PixelPoint) : CanvasAction
-    data class FillRegion(val point: PixelPoint, val color: Color) : CanvasAction
-    data class PickColor(val point: PixelPoint) : CanvasAction
-    data class UpdateViewport(val zoom: Float, val pan: Offset) : CanvasAction
-}
+import com.pixelmind.studio.model.PixelPoint
 
 @Composable
 fun PixelCanvas(
-    uiStateFlow: StateFlow<PixelCanvasUiState>,
-    onAction: (CanvasAction) -> Unit,
+    state: EditorUiState,
+    onDrawPixel: (PixelPoint) -> Unit,
+    onViewport: (Float, Offset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val uiState by uiStateFlow.collectAsState()
-
-    LaunchedEffect(uiState.gridWidth, uiState.gridHeight) {
-        // Hook for initializing empty layers or migration logic when canvas size changes.
-    }
-
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(modifier = modifier.background(Color(0xFF1A1A1A))) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(uiState.activeTool) {
+                .pointerInput(state.selectedTool, state.zoom, state.pan) {
                     detectDragGestures { change, _ ->
-                        val point = change.position.toPixelPoint(uiState)
-                        when (uiState.activeTool) {
-                            PixelTool.Pencil -> onAction(CanvasAction.SetPixel(point, uiState.activeColor))
-                            PixelTool.Eraser -> onAction(CanvasAction.ErasePixel(point))
-                            PixelTool.Bucket -> onAction(CanvasAction.FillRegion(point, uiState.activeColor))
-                            PixelTool.Eyedropper -> onAction(CanvasAction.PickColor(point))
-                        }
+                        onDrawPixel(change.position.toPixelPoint(state))
                     }
                 }
-                .pointerInput(Unit) {
+                .pointerInput(state.zoom, state.pan) {
                     detectTransformGestures { _, panChange, zoomChange, _ ->
-                        val newZoom = (uiState.zoom * zoomChange).coerceIn(0.5f, 32f)
-                        val newPan = uiState.pan + panChange
-                        onAction(CanvasAction.UpdateViewport(newZoom, newPan))
+                        val newZoom = (state.zoom * zoomChange).coerceIn(0.5f, 32f)
+                        onViewport(newZoom, state.pan + panChange)
                     }
                 },
         ) {
-            drawLayers(uiState)
-            if (uiState.showGrid) drawGrid(uiState)
+            drawPixelContent(state)
         }
     }
 }
 
-private fun DrawScope.drawLayers(uiState: PixelCanvasUiState) {
-    val visibleLayers = uiState.layers.filter { it.isVisible }
-    visibleLayers.forEach { layer ->
-        layer.pixels.forEach { (point, color) ->
-            val left = point.x * uiState.pixelSizePx
-            val top = point.y * uiState.pixelSizePx
+private fun DrawScope.drawPixelContent(state: EditorUiState) {
+    translate(state.pan.x, state.pan.y) {
+        scale(state.zoom, state.zoom, pivot = Offset.Zero) {
+            drawCheckerboard(state)
+            state.layers.filter { it.isVisible }.forEach { layer ->
+                layer.pixels.forEach { (point, color) ->
+                    drawRect(
+                        color = color,
+                        topLeft = Offset(point.x * state.pixelSizePx, point.y * state.pixelSizePx),
+                        size = androidx.compose.ui.geometry.Size(state.pixelSizePx, state.pixelSizePx),
+                    )
+                }
+            }
+            if (state.showGrid) drawGrid(state)
+        }
+    }
+}
+
+private fun DrawScope.drawCheckerboard(state: EditorUiState) {
+    val a = Color(0xFF2A2A2A)
+    val b = Color(0xFF333333)
+    for (y in 0 until state.canvasSize.height) {
+        for (x in 0 until state.canvasSize.width) {
             drawRect(
-                color = color,
-                topLeft = Offset(left, top),
-                size = androidx.compose.ui.geometry.Size(uiState.pixelSizePx, uiState.pixelSizePx),
+                color = if ((x + y) % 2 == 0) a else b,
+                topLeft = Offset(x * state.pixelSizePx, y * state.pixelSizePx),
+                size = androidx.compose.ui.geometry.Size(state.pixelSizePx, state.pixelSizePx),
             )
         }
     }
 }
 
-private fun DrawScope.drawGrid(uiState: PixelCanvasUiState) {
-    val gridColor = Color(0x33FFFFFF)
-    repeat(uiState.gridWidth + 1) { x ->
-        val xPos = x * uiState.pixelSizePx
+private fun DrawScope.drawGrid(state: EditorUiState) {
+    val gridColor = Color(0x30FFFFFF)
+    repeat(state.canvasSize.width + 1) { x ->
+        val xPos = x * state.pixelSizePx
         drawLine(
             color = gridColor,
             start = Offset(xPos, 0f),
-            end = Offset(xPos, uiState.gridHeight * uiState.pixelSizePx),
+            end = Offset(xPos, state.canvasSize.height * state.pixelSizePx),
         )
     }
-
-    repeat(uiState.gridHeight + 1) { y ->
-        val yPos = y * uiState.pixelSizePx
+    repeat(state.canvasSize.height + 1) { y ->
+        val yPos = y * state.pixelSizePx
         drawLine(
             color = gridColor,
             start = Offset(0f, yPos),
-            end = Offset(uiState.gridWidth * uiState.pixelSizePx, yPos),
+            end = Offset(state.canvasSize.width * state.pixelSizePx, yPos),
         )
     }
 }
 
-private fun Offset.toPixelPoint(uiState: PixelCanvasUiState): PixelPoint {
-    val normalizedX = ((x - uiState.pan.x) / (uiState.pixelSizePx * uiState.zoom)).toInt()
-    val normalizedY = ((y - uiState.pan.y) / (uiState.pixelSizePx * uiState.zoom)).toInt()
-
+private fun Offset.toPixelPoint(state: EditorUiState): PixelPoint {
+    val x = ((x - state.pan.x) / (state.pixelSizePx * state.zoom)).toInt()
+    val y = ((y - state.pan.y) / (state.pixelSizePx * state.zoom)).toInt()
     return PixelPoint(
-        x = normalizedX.coerceIn(0, uiState.gridWidth - 1),
-        y = normalizedY.coerceIn(0, uiState.gridHeight - 1),
+        x = x.coerceIn(0, state.canvasSize.width - 1),
+        y = y.coerceIn(0, state.canvasSize.height - 1),
     )
-}
-
-fun PixelCanvasUiState.canvasBoundsPx(): Rect {
-    val width = gridWidth * pixelSizePx * zoom
-    val height = gridHeight * pixelSizePx * zoom
-    return Rect(Offset.Zero, androidx.compose.ui.geometry.Size(width, height))
-}
-
-fun PixelCanvasUiState.exportSize(scaleFactor: Int): IntSize {
-    return IntSize(gridWidth * scaleFactor, gridHeight * scaleFactor)
 }
